@@ -1,6 +1,6 @@
 import random
 from dataclasses import dataclass
-from typing import Iterable, List, Optional, Sequence, Tuple
+from typing import Callable, Dict, Iterable, List, Optional, Sequence, Tuple
 
 import torch
 from torch import nn
@@ -32,7 +32,7 @@ class PrimaryModelWrapper:
         self.config = config
         self.device = device
 
-        # Pre-compute token ids for the static portions of the prompt/target.
+        
         self.pre_ids = self._encode(config.pre_text)
         self.post_ids = self._encode(config.post_text)
         self.target_ids = self._encode(config.target_text)
@@ -184,7 +184,7 @@ class GCGOptimizer:
         self.embedding_weight = embed_layer.weight.detach()
 
     def _initial_suffix(self, vocab_size: int, device: torch.device, length: int) -> torch.LongTensor:
-        # Initialize with space token if available, otherwise random tokens.
+        
         space_id = None
         try:
             space_id = self.primary.tokenizer.encode(" ", add_special_tokens=False)[0]
@@ -199,8 +199,9 @@ class GCGOptimizer:
     def optimize(
         self,
         num_iterations: int,
+        success_callback: Optional[Callable[[torch.LongTensor], bool]] = None,
         verbose: bool = True,
-    ) -> Tuple[torch.LongTensor, List[Tuple[int, float]]]:
+    ) -> Tuple[torch.LongTensor, List[Tuple[int, float]], int, Dict[int, bool]]:
         config = self.primary.config
         suffix_ids = self._initial_suffix(
             vocab_size=self.embedding_weight.size(0),
@@ -209,7 +210,10 @@ class GCGOptimizer:
         )
 
         history: List[Tuple[int, float]] = []
+
+        success_history: Dict[int, bool] = {}
         current_loss = self.primary.compute_loss(suffix_ids)
+        first_success_iter = -1
 
         for iteration in range(1, num_iterations + 1):
             grads, loss_val = self.primary.gradient(suffix_ids)
@@ -222,7 +226,7 @@ class GCGOptimizer:
                     continue
 
                 scores = torch.matmul(self.embedding_weight, (-grad_vec))
-                candidate_scores, candidate_ids = torch.topk(scores, k=self.top_k)
+                _, candidate_ids = torch.topk(scores, k=self.top_k)
 
                 best_candidate = suffix_ids[position].item()
                 best_loss = current_loss
@@ -248,19 +252,28 @@ class GCGOptimizer:
                     current_loss = best_loss
                     improved = True
 
-            if iteration % config.log_every == 0 or iteration == 1:
+            if iteration % config.log_every == 0 or iteration == 1 or iteration == num_iterations:
                 history.append((iteration, current_loss))
                 if verbose:
                     prompt_text = self.primary.decode_prompt(suffix_ids)
-                    print(f"Iter {iteration:04d} | Loss: {current_loss:.4f} | Prompt tail: {prompt_text[-60:]}")
+                    print(f"Iter {iteration:04d} | Loss: {current_loss:.4f} | Prompt tail: ...{prompt_text[-60:]}")
+                
+                # MODIFIED: Check and record success at this specific iteration
+                if success_callback:
+                    is_success = success_callback(suffix_ids)
+                    success_history[iteration] = is_success # NEW: Record success status
+                    if is_success and first_success_iter == -1:
+                        first_success_iter = iteration
+                        if verbose:
+                            print(f"--- Success found at iteration {iteration}! ---")
 
-            if not improved:
-                # No improvement during this iteration; optionally break early.
+            if not improved and iteration > 1:
                 if verbose:
                     print(f"No improvement at iteration {iteration}, stopping early.")
                 break
-
-        return suffix_ids, history
+        
+        # MODIFIED: Return the new success_history dictionary
+        return suffix_ids, history, first_success_iter, success_history
 
 
 def save_history(history: Iterable[Tuple[int, float]], path: str) -> None:

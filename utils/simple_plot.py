@@ -1,85 +1,78 @@
-from pathlib import Path
-from typing import Iterable, Sequence, Tuple
-
-
-def _scale(value: float, data_min: float, data_max: float, min_px: float, max_px: float) -> float:
-    if data_max == data_min:
-        return (min_px + max_px) / 2
-    return min_px + (value - data_min) * (max_px - min_px) / (data_max - data_min)
+from typing import Dict, Iterable, Tuple, Optional, List
+import matplotlib.pyplot as plt
+import numpy as np
 
 
 def save_line_plot_svg(
-    data: Sequence[Tuple[float, float]],
-    path: Path,
+    history: Iterable[Tuple[int, float]],
+    path: str,
     title: str,
     xlabel: str,
     ylabel: str,
-    width: int = 700,
-    height: int = 450,
+    success_iteration: Optional[int] = None,
 ) -> None:
-    if not data:
-        raise ValueError("No data provided for plotting")
+    """Saves a line plot of loss vs. iteration."""
+    iterations, losses = zip(*history)
+    
+    plt.figure(figsize=(10, 6))
+    plt.plot(iterations, losses, marker='o', linestyle='-')
+    
+    if success_iteration and success_iteration > 0:
+        success_loss = np.interp(success_iteration, iterations, losses)
+        plt.axvline(x=success_iteration, color='r', linestyle='--', label=f'Success at iter {success_iteration}')
+        plt.text(success_iteration + 1, success_loss, f'Success!', color='r')
+        plt.legend()
 
-    path.parent.mkdir(parents=True, exist_ok=True)
+    plt.title(title)
+    plt.xlabel(xlabel)
+    plt.ylabel(ylabel)
+    plt.grid(True)
+    plt.tight_layout()
+    plt.savefig(path, format="svg")
+    plt.close()
+    print(f"Saved plot to {path}")
 
-    xs, ys = zip(*data)
-    min_x, max_x = min(xs), max(xs)
-    min_y, max_y = min(ys), max(ys)
 
-    margin_left = 80
-    margin_right = 30
-    margin_top = 60
-    margin_bottom = 70
+def save_asr_plots_svg(
+    final_asr_data: Dict[str, float],
+    asr_over_time_data: Optional[Dict[str, List[Tuple[int, float]]]],
+    path: str,
+    title: str,
+) -> None:
+    """Saves a combined plot of final ASR (bar) and ASR vs. Iterations (line)."""
+    
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(18, 6))
+    fig.suptitle(title, fontsize=16)
 
-    plot_width = width - margin_left - margin_right
-    plot_height = height - margin_top - margin_bottom
+    # --- Subplot 1: Final ASR Bar Chart ---
+    labels = list(final_asr_data.keys())
+    values = list(final_asr_data.values())
+    bars = ax1.bar(labels, values, color=['#1f77b4', '#ff7f0e', '#2ca02c'])
+    ax1.set_title("Final Attack Success Rate (ASR)")
+    ax1.set_ylabel("Success Rate")
+    ax1.set_ylim(0, 1.05)
+    for bar in bars:
+        yval = bar.get_height()
+        ax1.text(bar.get_x() + bar.get_width()/2.0, yval, f'{yval:.1%}', va='bottom', ha='center')
 
-    points = []
-    for x, y in data:
-        px = _scale(x, min_x, max_x, margin_left, margin_left + plot_width)
-        py = _scale(y, min_y, max_y, margin_top + plot_height, margin_top)
-        points.append(f"{px},{py}")
+    # --- Subplot 2: ASR vs. Iterations Line Chart ---
+    ax2.set_title("ASR vs. Iterations")
+    if asr_over_time_data:
+        has_data = False
+        for model_name, data_points in asr_over_time_data.items():
+            if data_points:
+                has_data = True
+                iterations, asr_values = zip(*sorted(data_points))
+                ax2.plot(iterations, asr_values, marker='o', linestyle='-', label=model_name)
+        if has_data:
+            ax2.legend()
 
-    svg_parts = [
-        f"<svg xmlns='http://www.w3.org/2000/svg' width='{width}' height='{height}' viewBox='0 0 {width} {height}'>",
-        "<style>text{font-family:Arial,sans-serif;} .axis{stroke:#333;stroke-width:2;} .grid{stroke:#ccc;stroke-width:1;stroke-dasharray:4 4;}" "</style>",
-        f"<text x='{width/2}' y='{margin_top/2}' text-anchor='middle' font-size='20'>{title}</text>",
-    ]
+    ax2.set_xlabel("Iteration")
+    ax2.set_ylabel("Success Rate")
+    ax2.set_ylim(0, 1.05)
+    ax2.grid(True)
 
-    # Axes
-    svg_parts.append(
-        f"<line class='axis' x1='{margin_left}' y1='{margin_top}' x2='{margin_left}' y2='{margin_top + plot_height}' />"
-    )
-    svg_parts.append(
-        f"<line class='axis' x1='{margin_left}' y1='{margin_top + plot_height}' x2='{margin_left + plot_width}' y2='{margin_top + plot_height}' />"
-    )
-
-    # Axis labels
-    svg_parts.append(
-        f"<text x='{margin_left + plot_width / 2}' y='{height - margin_bottom / 3}' text-anchor='middle' font-size='16'>{xlabel}</text>"
-    )
-    svg_parts.append(
-        f"<text transform='rotate(-90 {margin_left / 3} {margin_top + plot_height / 2})' x='{margin_left / 3}' y='{margin_top + plot_height / 2}' text-anchor='middle' font-size='16'>{ylabel}</text>"
-    )
-
-    # Grid lines
-    for fraction in (0.25, 0.5, 0.75):
-        y = margin_top + plot_height * (1 - fraction)
-        svg_parts.append(
-            f"<line class='grid' x1='{margin_left}' y1='{y}' x2='{margin_left + plot_width}' y2='{y}' />"
-        )
-
-    # Polyline for data
-    svg_parts.append(
-        f"<polyline fill='none' stroke='#1f77b4' stroke-width='3' points='{' '.join(points)}' />"
-    )
-
-    # Data points markers
-    for x, y in data:
-        px = _scale(x, min_x, max_x, margin_left, margin_left + plot_width)
-        py = _scale(y, min_y, max_y, margin_top + plot_height, margin_top)
-        svg_parts.append(f"<circle cx='{px}' cy='{py}' r='4' fill='#1f77b4' />")
-
-    svg_parts.append("</svg>")
-
-    path.write_text("\n".join(svg_parts), encoding="utf-8")
+    plt.tight_layout(rect=[0, 0, 1, 0.96])
+    plt.savefig(path, format="svg")
+    plt.close()
+    print(f"Saved ASR plot to {path}")
